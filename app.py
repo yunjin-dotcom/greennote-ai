@@ -1,537 +1,579 @@
-import os
-import re
-import json
-import hashlib
-from pathlib import Path
-
 import streamlit as st
-from dotenv import load_dotenv
-from youtube_transcript_api import YouTubeTranscriptApi
 from openai import OpenAI
+from youtube_transcript_api import YouTubeTranscriptApi
+from urllib.parse import urlparse, parse_qs
+import hashlib
+import json
+import os
+import textwrap
 
-load_dotenv()
+# =========================
+# PAGE CONFIG
+# =========================
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+st.set_page_config(
+    page_title="GreenNote AI",
+    page_icon="🌿",
+    layout="wide"
+)
 
-CACHE_DIR = Path("summary_cache")
-CACHE_DIR.mkdir(exist_ok=True)
+# =========================
+# OPENAI
+# =========================
 
-LANGUAGE_OPTIONS = ["English", "Korean", "French", "Spanish", "Italian"]
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
-UI_TEXT = {
+# =========================
+# CACHE
+# =========================
+
+CACHE_DIR = "summary_cache"
+
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
+
+# =========================
+# LANGUAGE DETECTION
+# =========================
+
+browser_lang = st.context.headers.get("Accept-Language", "")
+
+if "ko" in browser_lang.lower():
+    default_lang = "한국어"
+else:
+    default_lang = "English"
+
+# =========================
+# UI TEXT
+# =========================
+
+TEXT = {
     "English": {
-        "app_name": "GreenNote AI",
+        "title": "🌿 GreenNote AI",
+        "subtitle": "Turn YouTube videos into beautiful notes, mindmaps, quizzes and flashcards.",
+        "cache": "Previously summarized videos load instantly from cache.",
+        "placeholder": "Paste a YouTube link here...",
+        "button": "✨ Create Note",
+        "loading": "Generating AI study notes...",
+        "invalid": "Invalid YouTube URL or video ID.",
         "menu": "Menu",
         "home": "Home",
         "note": "Note",
         "mindmap": "Mindmap",
         "quiz": "Quiz",
-        "create": "Create New Note",
-        "create_note": "Create Note",
-        "hero": "Turn YouTube videos into beautiful notes, mindmaps, quizzes and flashcards.",
-        "cache": "Previously summarized videos load instantly from cache.",
-        "input": "Paste a YouTube link",
-        "generate": "Generate study notes",
-        "instant": "Instant loading",
-        "cached": "Loaded instantly from cache.",
-        "new_saved": "New summary created.",
-        "getting_transcript": "Fetching transcript...",
-        "analyzing": "Analyzing video..."
+        "flashcards": "Flashcards",
+        "url_card": "📁 Paste a YouTube link",
+        "study_card": "🧠 Generate study notes",
+        "speed_card": "⚡ Instant loading",
+        "summary_title": "AI Study Notes",
+        "mindmap_title": "Mindmap"
     },
-    "Korean": {
-        "app_name": "GreenNote AI",
+
+    "한국어": {
+        "title": "🌿 GreenNote AI",
+        "subtitle": "유튜브 영상을 보기 좋은 요약 노트, 마인드맵, 퀴즈, 플래시카드로 정리합니다.",
+        "cache": "이전에 요약한 영상은 캐시에서 즉시 불러옵니다.",
+        "placeholder": "유튜브 링크를 입력하세요...",
+        "button": "✨ 노트 생성하기",
+        "loading": "AI가 요약 노트를 생성 중입니다...",
+        "invalid": "유효하지 않은 유튜브 링크입니다.",
         "menu": "메뉴",
         "home": "홈",
         "note": "노트",
         "mindmap": "마인드맵",
         "quiz": "퀴즈",
-        "create": "새 노트 만들기",
-        "create_note": "노트 생성",
-        "hero": "유튜브 영상을 노트, 마인드맵, 퀴즈로 정리합니다.",
-        "cache": "같은 영상은 저장된 결과를 즉시 불러옵니다.",
-        "input": "유튜브 링크 입력",
-        "generate": "학습 노트 생성",
-        "instant": "즉시 로딩",
-        "cached": "캐시된 결과를 즉시 불러왔습니다.",
-        "new_saved": "새 요약을 생성했습니다.",
-        "getting_transcript": "자막 불러오는 중...",
-        "analyzing": "영상 분석 중..."
+        "flashcards": "플래시카드",
+        "url_card": "📁 유튜브 링크 입력",
+        "study_card": "🧠 AI 요약 노트 생성",
+        "speed_card": "⚡ 캐시 기반 즉시 로딩",
+        "summary_title": "AI 요약 노트",
+        "mindmap_title": "마인드맵"
     }
 }
 
-st.set_page_config(
-    page_title="GreenNote AI",
-    page_icon="🌿",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# =========================
+# SIDEBAR
+# =========================
+
+with st.sidebar:
+
+    st.markdown(
+        """
+        <h1 style='color:#065f46;'>🌿 GreenNote AI</h1>
+        """,
+        unsafe_allow_html=True
+    )
+
+    language = st.selectbox(
+        "Language",
+        ["English", "한국어"],
+        index=0 if default_lang == "English" else 1
+    )
+
+    t = TEXT[language]
+
+    st.markdown("---")
+
+    st.markdown(f"### {t['menu']}")
+
+    st.radio(
+        "",
+        [
+            t["home"],
+            t["note"],
+            t["mindmap"],
+            t["quiz"],
+            t["flashcards"]
+        ]
+    )
+
+# =========================
+# CSS
+# =========================
 
 st.markdown("""
 <style>
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #ecfdf5 0%, #ffffff 100%);
+
+html, body, [class*="css"] {
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
 }
+
+.main {
+    background-color:#f7faf8;
+}
+
 .block-container {
-    max-width: 1200px;
-    padding-top: 1rem;
+    max-width:1200px;
+    padding-top:2rem;
 }
-.main-title {
-    font-size: clamp(40px, 7vw, 72px);
-    font-weight: 900;
-    color: #064e3b;
-    line-height: 1.1;
+
+.hero-box {
+    background:white;
+    padding:40px;
+    border-radius:28px;
+    border:1px solid #d1fae5;
+    margin-bottom:40px;
 }
-.soft-card {
-    background: white;
-    border: 1px solid #d1fae5;
-    border-radius: 28px;
-    padding: clamp(22px, 4vw, 40px);
-    box-shadow: 0 14px 40px rgba(6,78,59,0.08);
-    margin-bottom: 28px;
-}
-.green-box {
-    background: #ecfdf5;
-    border-left: 7px solid #10b981;
-    border-radius: 18px;
-    padding: 20px;
-    color: #065f46;
-    font-weight: 700;
-    font-size: clamp(17px, 2vw, 24px);
-    margin-top: 18px;
-}
-.keyword {
-    display:inline-block;
-    background:#d1fae5;
+
+.hero-title {
+    font-size:72px;
+    font-weight:900;
     color:#065f46;
-    padding:8px 14px;
-    border-radius:999px;
-    margin-right:8px;
-    margin-top:10px;
+    margin-bottom:24px;
+}
+
+.hero-sub {
+    background:#dcfce7;
+    padding:24px;
+    border-radius:22px;
+    font-size:22px;
+    font-weight:700;
+    color:#065f46;
+    border-left:8px solid #10b981;
+}
+
+.cache-text {
+    margin-top:20px;
+    font-size:18px;
+    color:#64748b;
+}
+
+.center-wrap {
+    width:100%;
+    display:flex;
+    justify-content:center;
+}
+
+.input-wrap {
+    width:100%;
+    max-width:1000px;
+}
+
+.stTextInput > div > div > input {
+    height:68px;
+    font-size:22px;
+    border-radius:18px;
+    border:2px solid #bbf7d0;
+}
+
+.stButton > button {
+    width:100%;
+    height:68px;
+    border:none;
+    border-radius:18px;
+    background:#059669;
+    color:white;
+    font-size:24px;
+    font-weight:800;
+}
+
+.card-row {
+    display:flex;
+    gap:20px;
+    margin-top:30px;
+    margin-bottom:40px;
+    flex-wrap:wrap;
+}
+
+.card {
+    flex:1;
+    min-width:240px;
+    padding:24px;
+    border-radius:20px;
+    font-size:24px;
     font-weight:700;
 }
-.note-card {
+
+.blue {
+    background:#dbeafe;
+    color:#1d4ed8;
+}
+
+.green {
+    background:#dcfce7;
+    color:#166534;
+}
+
+.yellow {
+    background:#fef9c3;
+    color:#a16207;
+}
+
+.note-box {
     background:white;
+    padding:34px;
+    border-radius:24px;
     border:1px solid #d1fae5;
-    border-radius:22px;
-    padding:24px;
+    margin-top:40px;
+}
+
+.note-title {
+    color:#065f46;
+    font-size:42px;
+    font-weight:900;
     margin-bottom:20px;
-    box-shadow:0 8px 22px rgba(6,78,59,0.06);
 }
-.info-card {
-    background:linear-gradient(180deg,#ffffff 0%,#f0fdf4 100%);
-    border:1px solid #bbf7d0;
-    border-radius:22px;
+
+.note-card {
+    background:#f0fdf4;
+    border-radius:18px;
     padding:24px;
+    margin-bottom:24px;
+    border-left:6px solid #10b981;
+}
+
+.note-card h3 {
+    color:#065f46;
+    font-size:28px;
+    margin-bottom:12px;
+}
+
+.note-card p {
+    color:#334155;
+    font-size:18px;
+    line-height:1.8;
+}
+
+.mindmap-wrap {
+    margin-top:40px;
+    background:white;
+    border-radius:28px;
+    padding:40px;
+    border:1px solid #d1fae5;
+    overflow-x:auto;
+}
+
+.mindmap-title {
+    font-size:42px;
+    font-weight:900;
+    color:#065f46;
+    margin-bottom:30px;
+}
+
+.mindmap-center {
+    text-align:center;
+    font-size:32px;
+    font-weight:900;
+    color:#065f46;
+    margin-bottom:40px;
+}
+
+.branch {
+    background:#dcfce7;
+    color:#065f46;
+    padding:18px 24px;
+    border-radius:18px;
     margin-bottom:18px;
+    font-size:22px;
+    font-weight:700;
 }
-.stButton > button {
-    background:#059669 !important;
-    color:white !important;
-    border:none !important;
-    border-radius:16px !important;
-    height:58px !important;
-    font-size:18px !important;
-    font-weight:800 !important;
-    width:100%;
-}
-.stTextInput input {
-    border-radius:16px !important;
-    border:2px solid #d1fae5 !important;
-    height:58px !important;
-    font-size:17px !important;
-}
+
 @media (max-width: 768px) {
-    [data-testid="stHorizontalBlock"] {
-        flex-direction: column;
+
+    .hero-title {
+        font-size:44px;
     }
-    [data-testid="column"] {
-        width:100% !important;
-        flex:1 1 100% !important;
+
+    .hero-sub {
+        font-size:18px;
+    }
+
+    .stButton > button {
+        font-size:20px;
+    }
+
+    .card {
+        font-size:18px;
+    }
+
+    .note-title {
+        font-size:32px;
+    }
+
+    .branch {
+        font-size:18px;
     }
 }
+
 </style>
 """, unsafe_allow_html=True)
 
-
-def clean_text(text):
-    text = str(text or "")
-    text = re.sub(r"<[^>]*>", "", text)
-    text = text.replace("```json", "").replace("```", "")
-    return text.strip()
-
-
-def extract_video_id(url):
-    patterns = [
-        r"(?:v=)([a-zA-Z0-9_-]{11})",
-        r"(?:youtu\\.be/)([a-zA-Z0-9_-]{11})",
-        r"(?:shorts/)([a-zA-Z0-9_-]{11})",
-        r"(?:embed/)([a-zA-Z0-9_-]{11})"
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-
-    if re.fullmatch(r"[a-zA-Z0-9_-]{11}", url):
-        return url
-
-    raise ValueError("Invalid YouTube URL or video ID.")
-
-
-def seconds_to_mmss(seconds):
-    seconds = int(seconds)
-    return f"{seconds // 60:02d}:{seconds % 60:02d}"
-
-
-def youtube_link(video_id, seconds):
-    return f"https://youtu.be/{video_id}?t={int(seconds)}"
-
-
-def cache_key(video_id, language):
-    raw = f"{video_id}_{language}_robust_transcript_v1"
-    return hashlib.md5(raw.encode()).hexdigest()
-
-
-def cache_path(video_id, language):
-    return CACHE_DIR / f"{cache_key(video_id, language)}.json"
-
-
-def load_cache(video_id, language):
-    path = cache_path(video_id, language)
-    if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return None
-
-
-def save_cache(video_id, language, report):
-    path = cache_path(video_id, language)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
-
-
-@st.cache_data(show_spinner=False)
-def get_transcript(video_id):
-    ytt = YouTubeTranscriptApi()
-
-    preferred_languages = [
-        "en", "ko", "es", "fr", "it",
-        "ja", "zh-Hans", "zh-Hant",
-        "de", "pt", "id", "vi", "th", "hi"
-    ]
-
-    transcript = None
-
-    try:
-        transcript = ytt.fetch(video_id, languages=preferred_languages)
-    except Exception:
-        pass
-
-    if transcript is None:
-        try:
-            transcript_list = ytt.list(video_id)
-
-            try:
-                transcript_obj = transcript_list.find_transcript(preferred_languages)
-                transcript = transcript_obj.fetch()
-            except Exception:
-                pass
-
-            if transcript is None:
-                try:
-                    transcript_obj = transcript_list.find_generated_transcript(preferred_languages)
-                    transcript = transcript_obj.fetch()
-                except Exception:
-                    pass
-
-            if transcript is None:
-                for transcript_obj in transcript_list:
-                    try:
-                        transcript = transcript_obj.fetch()
-                        break
-                    except Exception:
-                        continue
-
-        except Exception as e:
-            raise RuntimeError("Could not retrieve transcript. This video may not have available captions.") from e
-
-    if transcript is None:
-        raise RuntimeError("No available transcript found for this video.")
-
-    items = []
-    for item in transcript:
-        items.append({
-            "time": seconds_to_mmss(item.start),
-            "seconds": int(item.start),
-            "url": youtube_link(video_id, item.start),
-            "text": item.text
-        })
-
-    return items
-
-
-def split_transcript(items, max_chars=14000):
-    chunks = []
-    current = []
-    current_len = 0
-
-    for item in items:
-        line = f"[{item['time']} | {item['url']} | {item['seconds']} seconds] {item['text']}"
-        current.append(line)
-        current_len += len(line)
-
-        if current_len >= max_chars:
-            chunks.append("\\n".join(current))
-            current = []
-            current_len = 0
-
-    if current:
-        chunks.append("\\n".join(current))
-
-    return chunks
-
-
-def analyze_chunk(chunk, output_language):
-    prompt = f"""
-Analyze this YouTube transcript.
-
-Output language: {output_language}
-
-Rules:
-- Write everything only in {output_language}.
-- If Korean, write natural Korean, not awkward translated Korean.
-- No HTML.
-- No SVG.
-- No code.
-- No markdown tables.
-- Use timeline information when available.
-- Do not invent facts.
-
-Transcript:
-{chunk}
-"""
-
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {"role": "system", "content": f"Return clean natural text only in {output_language}."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.2
-    )
-
-    return response.choices[0].message.content
-
-
-def create_report(content, output_language):
-    prompt = f"""
-Create a clean JSON learning report.
-
-Language: {output_language}
-
-Rules:
-- Return valid JSON only.
-- No HTML.
-- No SVG.
-- No code.
-- If Korean, use natural Korean expressions.
-- Make it useful and readable.
-
-JSON schema:
-{{
- "title": "",
- "summary": "",
- "keywords": ["", "", ""],
- "sections": [
-   {{
-      "time": "",
-      "url": "",
-      "emoji": "",
-      "title": "",
-      "message": "",
-      "points": ["", "", ""]
-   }}
- ],
- "mindmap": [
-   {{
-      "emoji": "",
-      "topic": "",
-      "children": ["", "", ""]
-   }}
- ],
- "quiz": [
-   {{
-      "question": "",
-      "answer": "",
-      "explanation": ""
-   }}
- ]
-}}
-
-Make:
-- 6 to 9 sections
-- 8 to 12 mindmap branches
-- 5 quiz questions
-
-Source:
-{content}
-"""
-
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {"role": "system", "content": "Return valid JSON only."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.15
-    )
-
-    content = response.choices[0].message.content
-    content = content.replace("```json", "").replace("```", "").strip()
-    return json.loads(content)
-
-
-if "selected_language" not in st.session_state:
-    st.session_state.selected_language = "English"
-
-with st.sidebar:
-    st.markdown("## 🌿 GreenNote AI")
-
-    lang = st.selectbox(
-        "Language",
-        LANGUAGE_OPTIONS,
-        index=LANGUAGE_OPTIONS.index(st.session_state.selected_language)
-    )
-
-    st.session_state.selected_language = lang
-    t = UI_TEXT.get(lang, UI_TEXT["English"])
-
-    page = st.radio(
-        t["menu"],
-        [t["home"], t["note"], t["mindmap"], t["quiz"]]
-    )
-
-    st.divider()
-    st.markdown(f"### ✨ {t['create']}")
+# =========================
+# HERO
+# =========================
 
 st.markdown(f"""
-<div class="soft-card">
-<div class="main-title">🌿 GreenNote AI</div>
-<div class="green-box">{t['hero']}</div>
-<p style="font-size:18px;color:#64748b;margin-top:16px;">{t['cache']}</p>
+<div class="hero-box">
+    <div class="hero-title">{t['title']}</div>
+
+    <div class="hero-sub">
+        {t['subtitle']}
+    </div>
+
+    <div class="cache-text">
+        {t['cache']}
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
+# =========================
+# CENTER INPUT
+# =========================
+
+st.markdown('<div class="center-wrap"><div class="input-wrap">', unsafe_allow_html=True)
+
 youtube_url = st.text_input(
     "",
-    placeholder="https://www.youtube.com/watch?v=..."
+    placeholder=t["placeholder"]
 )
 
-create_btn = st.button(
-    f"✨ {t['create_note']}",
-    use_container_width=True
-)
+generate = st.button(t["button"])
 
-c1, c2, c3 = st.columns(3)
+st.markdown('</div></div>', unsafe_allow_html=True)
 
-with c1:
-    st.info(f"📁 {t['input']}")
-with c2:
-    st.success(f"🧠 {t['generate']}")
-with c3:
-    st.warning(f"⚡ {t['instant']}")
+# =========================
+# CARDS
+# =========================
 
-if "report" not in st.session_state:
-    st.session_state.report = None
+st.markdown(f"""
+<div class="card-row">
+    <div class="card blue">{t['url_card']}</div>
+    <div class="card green">{t['study_card']}</div>
+    <div class="card yellow">{t['speed_card']}</div>
+</div>
+""", unsafe_allow_html=True)
 
-if create_btn:
+# =========================
+# FUNCTIONS
+# =========================
+
+def extract_video_id(url):
+
     try:
-        video_id = extract_video_id(youtube_url)
-        cached = load_cache(video_id, lang)
+        parsed_url = urlparse(url)
 
-        if cached:
-            st.session_state.report = cached
-            st.success(t["cached"])
+        if parsed_url.hostname == "youtu.be":
+            return parsed_url.path[1:]
 
-        else:
-            with st.spinner(t["getting_transcript"]):
-                transcript_items = get_transcript(video_id)
+        if parsed_url.hostname in [
+            "www.youtube.com",
+            "youtube.com",
+            "m.youtube.com"
+        ]:
 
-            chunks = split_transcript(transcript_items)
-            combined = []
+            if parsed_url.path == "/watch":
+                return parse_qs(parsed_url.query).get("v", [None])[0]
 
-            with st.spinner(t["analyzing"]):
-                for chunk in chunks:
-                    combined.append(analyze_chunk(chunk, lang))
+            if parsed_url.path.startswith("/shorts/"):
+                return parsed_url.path.split("/")[2]
 
-            report = create_report("\\n\\n".join(combined), lang)
+            if parsed_url.path.startswith("/embed/"):
+                return parsed_url.path.split("/")[2]
 
-            save_cache(video_id, lang, report)
-            st.session_state.report = report
+        return None
 
-            st.success(t["new_saved"])
-
-    except Exception as e:
-        st.error(str(e))
+    except:
+        return None
 
 
-report = st.session_state.report
+def get_cache_path(video_id, lang):
+    cache_key = hashlib.md5(f"{video_id}_{lang}".encode()).hexdigest()
+    return f"{CACHE_DIR}/{cache_key}.json"
 
-if report and page == t["note"]:
-    st.markdown(
-        f"<div class='main-title' style='font-size:48px'>{clean_text(report.get('title'))}</div>",
-        unsafe_allow_html=True
-    )
-    st.markdown(
-        f"<div class='green-box'>{clean_text(report.get('summary'))}</div>",
-        unsafe_allow_html=True
-    )
 
-    for keyword in report.get("keywords", []):
-        st.markdown(
-            f"<span class='keyword'>#{clean_text(keyword)}</span>",
-            unsafe_allow_html=True
-        )
+def load_cache(video_id, lang):
 
-    st.markdown("<br><br>", unsafe_allow_html=True)
+    cache_path = get_cache_path(video_id, lang)
 
-    for section in report.get("sections", []):
-        st.markdown('<div class="note-card">', unsafe_allow_html=True)
+    if os.path.exists(cache_path):
 
-        if section.get("url"):
-            st.link_button(section.get("time", "00:00"), section.get("url"))
+        with open(cache_path, "r", encoding="utf-8") as f:
+            return json.load(f)
 
-        st.markdown(f"## {clean_text(section.get('emoji'))} {clean_text(section.get('title'))}")
-        st.success(clean_text(section.get("message")))
+    return None
 
-        for point in section.get("points", []):
-            st.markdown(f"- {clean_text(point)}")
 
-        st.markdown("</div>", unsafe_allow_html=True)
+def save_cache(video_id, lang, data):
 
-if report and page == t["mindmap"]:
-    st.markdown(
-        f"<div class='main-title' style='font-size:48px'>{clean_text(report.get('title'))}</div>",
-        unsafe_allow_html=True
-    )
+    cache_path = get_cache_path(video_id, lang)
 
-    cols = st.columns(2)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-    for i, branch in enumerate(report.get("mindmap", [])):
-        with cols[i % 2]:
-            st.markdown('<div class="info-card">', unsafe_allow_html=True)
-            st.markdown(f"## {clean_text(branch.get('emoji'))} {clean_text(branch.get('topic'))}")
-            for child in branch.get("children", []):
-                st.markdown(f"- {clean_text(child)}")
-            st.markdown("</div>", unsafe_allow_html=True)
 
-if report and page == t["quiz"]:
-    st.markdown(
-        f"<div class='main-title' style='font-size:48px'>{clean_text(report.get('title'))}</div>",
-        unsafe_allow_html=True
-    )
+# =========================
+# GENERATE
+# =========================
 
-    for i, quiz in enumerate(report.get("quiz", []), 1):
-        with st.expander(f"Q{i}. {clean_text(quiz.get('question'))}"):
-            st.success(clean_text(quiz.get("answer")))
-            st.write(clean_text(quiz.get("explanation")))
+if generate and youtube_url:
+
+    video_id = extract_video_id(youtube_url)
+
+    if not video_id:
+        st.error(t["invalid"])
+        st.stop()
+
+    cached = load_cache(video_id, language)
+
+    if cached:
+
+        result = cached
+
+    else:
+
+        with st.spinner(t["loading"]):
+
+            preferred_languages = [
+                "en",
+                "ko",
+                "ja",
+                "es",
+                "fr",
+                "de"
+            ]
+
+            transcript = None
+
+            for lang_code in preferred_languages:
+
+                try:
+                    transcript = YouTubeTranscriptApi.get_transcript(
+                        video_id,
+                        languages=[lang_code]
+                    )
+                    break
+
+                except:
+                    continue
+
+            if not transcript:
+                st.error("No transcript available.")
+                st.stop()
+
+            full_text = " ".join([x["text"] for x in transcript])
+
+            prompt = f"""
+            Create study notes from this transcript.
+
+            Return:
+            1. title
+            2. summary
+            3. 8 note sections
+            4. simple mindmap branches
+
+            Transcript:
+            {full_text[:12000]}
+            """
+
+            response = client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            )
+
+            content = response.choices[0].message.content
+
+            sections = content.split("\n\n")
+
+            result = {
+                "title": sections[0] if len(sections) > 0 else "",
+                "summary": sections[1] if len(sections) > 1 else "",
+                "sections": sections[2:10]
+            }
+
+            save_cache(video_id, language, result)
+
+    # =========================
+    # NOTES
+    # =========================
+
+    st.markdown(f"""
+    <div class="note-box">
+        <div class="note-title">{t['summary_title']}</div>
+    """, unsafe_allow_html=True)
+
+    for idx, section in enumerate(result["sections"]):
+
+        lines = section.split("\n")
+
+        title = lines[0] if len(lines) > 0 else ""
+        body = " ".join(lines[1:])
+
+        st.markdown(f"""
+        <div class="note-card">
+            <h3>{title}</h3>
+            <p>{body}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # =========================
+    # MINDMAP
+    # =========================
+
+    st.markdown(f"""
+    <div class="mindmap-wrap">
+        <div class="mindmap-title">{t['mindmap_title']}</div>
+        <div class="mindmap-center">
+            {result['title']}
+        </div>
+    """, unsafe_allow_html=True)
+
+    for section in result["sections"][:8]:
+
+        short = textwrap.shorten(section, width=80)
+
+        st.markdown(f"""
+        <div class="branch">
+            🌿 {short}
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)

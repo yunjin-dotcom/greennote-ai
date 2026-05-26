@@ -643,7 +643,7 @@ with st.sidebar:
     selected_language_label = st.selectbox(
         "Output Language",
         LANGUAGE_OPTIONS,
-        index=0
+        index=1
     )
 
     output_language = LANGUAGE_MAP[selected_language_label]

@@ -17,7 +17,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 CACHE_DIR = Path("summary_cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
-LANGUAGES = ["English", "Korean"]
+LANGUAGES = ["English", "Korean", "French", "Spanish", "Italian"]
 
 TEXT = {
     "English": {
@@ -58,6 +58,63 @@ TEXT = {
         "quiz": "퀴즈",
         "flashcards": "플래시카드",
     },
+    "French": {
+        "title": "🌿 GreenNote AI",
+        "subtitle": "Transformez des vidéos YouTube en notes, cartes mentales, quiz et cartes mémoire.",
+        "cache": "Les vidéos déjà résumées se chargent instantanément depuis le cache.",
+        "placeholder": "Collez un lien YouTube ici...",
+        "button": "✨ Créer une note",
+        "loading_transcript": "Récupération des sous-titres...",
+        "loading_ai": "Création des notes...",
+        "cached": "Chargé depuis le cache.",
+        "created": "Nouvelle note créée.",
+        "invalid": "Lien YouTube invalide.",
+        "no_transcript": "Aucun sous-titre disponible pour cette vidéo.",
+        "menu": "Menu",
+        "home": "Accueil",
+        "note": "Note",
+        "mindmap": "Carte mentale",
+        "quiz": "Quiz",
+        "flashcards": "Cartes mémoire",
+    },
+    "Spanish": {
+        "title": "🌿 GreenNote AI",
+        "subtitle": "Convierte videos de YouTube en notas, mapas mentales, quizzes y tarjetas.",
+        "cache": "Los videos ya resumidos se cargan al instante desde la caché.",
+        "placeholder": "Pega un enlace de YouTube aquí...",
+        "button": "✨ Crear nota",
+        "loading_transcript": "Obteniendo subtítulos...",
+        "loading_ai": "Creando notas...",
+        "cached": "Cargado desde la caché.",
+        "created": "Nueva nota creada.",
+        "invalid": "Enlace de YouTube inválido.",
+        "no_transcript": "No hay subtítulos disponibles para este video.",
+        "menu": "Menú",
+        "home": "Inicio",
+        "note": "Nota",
+        "mindmap": "Mapa mental",
+        "quiz": "Quiz",
+        "flashcards": "Tarjetas",
+    },
+    "Italian": {
+        "title": "🌿 GreenNote AI",
+        "subtitle": "Trasforma video YouTube in note, mappe mentali, quiz e flashcard.",
+        "cache": "I video già riassunti si caricano subito dalla cache.",
+        "placeholder": "Incolla un link YouTube qui...",
+        "button": "✨ Crea nota",
+        "loading_transcript": "Recupero sottotitoli...",
+        "loading_ai": "Creazione note...",
+        "cached": "Caricato dalla cache.",
+        "created": "Nuova nota creata.",
+        "invalid": "Link YouTube non valido.",
+        "no_transcript": "Nessun sottotitolo disponibile per questo video.",
+        "menu": "Menu",
+        "home": "Home",
+        "note": "Note",
+        "mindmap": "Mappa mentale",
+        "quiz": "Quiz",
+        "flashcards": "Flashcard",
+    },
 }
 
 st.set_page_config(
@@ -91,9 +148,17 @@ st.markdown(
 )
 
 
+def clean_text(value):
+    text = str(value or "")
+    text = re.sub(r"<[^>]*>", "", text)
+    text = text.replace("```json", "").replace("```", "")
+    return text.strip()
+
+
 def extract_video_id(url: str):
     try:
-        parsed = urlparse(url.strip())
+        url = url.strip()
+        parsed = urlparse(url)
 
         if parsed.hostname in ["youtu.be", "www.youtu.be"]:
             video_id = parsed.path.strip("/")
@@ -109,8 +174,8 @@ def extract_video_id(url: str):
             if parsed.path.startswith("/embed/"):
                 return parsed.path.split("/")[2]
 
-        if re.fullmatch(r"[a-zA-Z0-9_-]{11}", url.strip()):
-            return url.strip()
+        if re.fullmatch(r"[a-zA-Z0-9_-]{11}", url):
+            return url
 
         return None
 
@@ -128,7 +193,7 @@ def youtube_time_link(video_id, seconds):
 
 
 def get_cache_path(video_id, language):
-    key = hashlib.md5(f"{video_id}_{language}_stable_native_v2".encode()).hexdigest()
+    key = hashlib.md5(f"{video_id}_{language}_robust_final_v1".encode()).hexdigest()
     return CACHE_DIR / f"{key}.json"
 
 
@@ -148,48 +213,52 @@ def save_cache(video_id, language, data):
 
 @st.cache_data(show_spinner=False)
 def get_transcript(video_id):
-    api = YouTubeTranscriptApi()
-
     preferred_languages = [
-        "en", "ko", "ja", "es", "fr", "it",
+        "ko", "en", "ja", "es", "fr", "it",
         "de", "pt", "zh-Hans", "zh-Hant",
-        "id", "vi", "th", "hi"
+        "id", "vi", "th", "hi", "ar"
     ]
 
     transcript = None
 
     try:
-        transcript = api.fetch(video_id, languages=preferred_languages)
-    except Exception:
-        pass
+        api = YouTubeTranscriptApi()
 
-    if transcript is None:
         try:
-            transcript_list = api.list(video_id)
-
-            try:
-                transcript_obj = transcript_list.find_transcript(preferred_languages)
-                transcript = transcript_obj.fetch()
-            except Exception:
-                pass
-
-            if transcript is None:
-                try:
-                    transcript_obj = transcript_list.find_generated_transcript(preferred_languages)
-                    transcript = transcript_obj.fetch()
-                except Exception:
-                    pass
-
-            if transcript is None:
-                for transcript_obj in transcript_list:
-                    try:
-                        transcript = transcript_obj.fetch()
-                        break
-                    except Exception:
-                        continue
-
+            transcript = api.fetch(video_id, languages=preferred_languages)
         except Exception:
             transcript = None
+
+        if transcript is None:
+            try:
+                transcript_list = api.list(video_id)
+
+                try:
+                    transcript_obj = transcript_list.find_transcript(preferred_languages)
+                    transcript = transcript_obj.fetch()
+                except Exception:
+                    transcript = None
+
+                if transcript is None:
+                    try:
+                        transcript_obj = transcript_list.find_generated_transcript(preferred_languages)
+                        transcript = transcript_obj.fetch()
+                    except Exception:
+                        transcript = None
+
+                if transcript is None:
+                    for transcript_obj in transcript_list:
+                        try:
+                            transcript = transcript_obj.fetch()
+                            break
+                        except Exception:
+                            continue
+
+            except Exception:
+                transcript = None
+
+    except Exception:
+        transcript = None
 
     if transcript is None:
         return []
@@ -339,13 +408,6 @@ Analysis:
     return json.loads(content)
 
 
-def clean_text(value):
-    text = str(value or "")
-    text = re.sub(r"<[^>]*>", "", text)
-    text = text.replace("```", "")
-    return text.strip()
-
-
 if "language" not in st.session_state:
     st.session_state.language = "English"
 
@@ -361,6 +423,7 @@ with st.sidebar:
         LANGUAGES,
         index=LANGUAGES.index(st.session_state.language),
     )
+
     st.session_state.language = language
     t = TEXT[language]
 
@@ -382,9 +445,15 @@ youtube_url = st.text_input(
 create_button = st.button(t["button"], use_container_width=True)
 
 col1, col2, col3 = st.columns(3)
-col1.info("📁 " + ("Paste a YouTube link" if language == "English" else "유튜브 링크 입력"))
-col2.success("🧠 " + ("Generate study notes" if language == "English" else "학습 노트 생성"))
-col3.warning("⚡ " + ("Instant loading" if language == "English" else "즉시 로딩"))
+
+if language == "Korean":
+    col1.info("📁 유튜브 링크 입력")
+    col2.success("🧠 학습 노트 생성")
+    col3.warning("⚡ 즉시 로딩")
+else:
+    col1.info("📁 Paste a YouTube link")
+    col2.success("🧠 Generate study notes")
+    col3.warning("⚡ Instant loading")
 
 
 if create_button:
@@ -432,8 +501,9 @@ if report:
         st.subheader(clean_text(report.get("title", "")))
         st.write(clean_text(report.get("summary", "")))
 
-        for keyword in report.get("keywords", []):
-            st.badge(clean_text(keyword))
+        keywords = report.get("keywords", [])
+        if keywords:
+            st.write(" | ".join([f"#{clean_text(k)}" for k in keywords]))
 
     elif page == t["note"]:
         st.header(clean_text(report.get("title", "")))

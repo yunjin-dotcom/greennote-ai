@@ -4,15 +4,34 @@ import json
 import hashlib
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 from youtube_transcript_api import YouTubeTranscriptApi
 
+try:
+    from supabase import create_client
+except Exception:
+    create_client = None
+
+
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY", "")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+supabase = None
+if create_client and SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception:
+        supabase = None
+
 
 CACHE_DIR = Path("summary_cache")
 CACHE_DIR.mkdir(exist_ok=True)
@@ -27,9 +46,9 @@ TEXT = {
         "placeholder": "Paste a YouTube link here...",
         "button": "✨ Create Note",
         "loading_transcript": "Fetching transcript...",
-        "loading_ai": "Creating notes...",
-        "cached": "Loaded from cache.",
-        "created": "New note created.",
+        "loading_ai": "Creating notes in parallel...",
+        "cached": "Loaded instantly from cache.",
+        "created": "New note created and saved.",
         "invalid": "Invalid YouTube URL.",
         "no_transcript": "No transcript is available for this video.",
         "menu": "Menu",
@@ -46,9 +65,9 @@ TEXT = {
         "placeholder": "유튜브 링크를 입력하세요...",
         "button": "✨ 노트 생성하기",
         "loading_transcript": "자막을 가져오는 중...",
-        "loading_ai": "AI가 노트를 만드는 중...",
-        "cached": "저장된 요약을 불러왔습니다.",
-        "created": "새 노트를 생성했습니다.",
+        "loading_ai": "AI가 병렬로 노트를 만드는 중...",
+        "cached": "저장된 요약을 즉시 불러왔습니다.",
+        "created": "새 노트를 생성하고 저장했습니다.",
         "invalid": "유효하지 않은 유튜브 링크입니다.",
         "no_transcript": "이 영상에서 사용할 수 있는 자막을 찾지 못했습니다.",
         "menu": "메뉴",
@@ -65,9 +84,9 @@ TEXT = {
         "placeholder": "Collez un lien YouTube ici...",
         "button": "✨ Créer une note",
         "loading_transcript": "Récupération des sous-titres...",
-        "loading_ai": "Création des notes...",
-        "cached": "Chargé depuis le cache.",
-        "created": "Nouvelle note créée.",
+        "loading_ai": "Création des notes en parallèle...",
+        "cached": "Chargé instantanément depuis le cache.",
+        "created": "Nouvelle note créée et enregistrée.",
         "invalid": "Lien YouTube invalide.",
         "no_transcript": "Aucun sous-titre disponible pour cette vidéo.",
         "menu": "Menu",
@@ -84,9 +103,9 @@ TEXT = {
         "placeholder": "Pega un enlace de YouTube aquí...",
         "button": "✨ Crear nota",
         "loading_transcript": "Obteniendo subtítulos...",
-        "loading_ai": "Creando notas...",
-        "cached": "Cargado desde la caché.",
-        "created": "Nueva nota creada.",
+        "loading_ai": "Creando notas en paralelo...",
+        "cached": "Cargado al instante desde la caché.",
+        "created": "Nueva nota creada y guardada.",
         "invalid": "Enlace de YouTube inválido.",
         "no_transcript": "No hay subtítulos disponibles para este video.",
         "menu": "Menú",
@@ -103,9 +122,9 @@ TEXT = {
         "placeholder": "Incolla un link YouTube qui...",
         "button": "✨ Crea nota",
         "loading_transcript": "Recupero sottotitoli...",
-        "loading_ai": "Creazione note...",
-        "cached": "Caricato dalla cache.",
-        "created": "Nuova nota creata.",
+        "loading_ai": "Creazione note in parallelo...",
+        "cached": "Caricato subito dalla cache.",
+        "created": "Nuova nota creata e salvata.",
         "invalid": "Link YouTube non valido.",
         "no_transcript": "Nessun sottotitolo disponibile per questo video.",
         "menu": "Menu",
@@ -192,23 +211,75 @@ def youtube_time_link(video_id, seconds):
     return f"https://youtu.be/{video_id}?t={int(seconds)}"
 
 
-def get_cache_path(video_id, language):
-    key = hashlib.md5(f"{video_id}_{language}_robust_final_v1".encode()).hexdigest()
+def local_cache_path(video_id, language):
+    key = hashlib.md5(f"{video_id}_{language}_parallel_supabase_v1".encode()).hexdigest()
     return CACHE_DIR / f"{key}.json"
 
 
-def load_cache(video_id, language):
-    path = get_cache_path(video_id, language)
+def load_local_cache(video_id, language):
+    path = local_cache_path(video_id, language)
     if path.exists():
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     return None
 
 
-def save_cache(video_id, language, data):
-    path = get_cache_path(video_id, language)
+def save_local_cache(video_id, language, report):
+    path = local_cache_path(video_id, language)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+
+def load_supabase_cache(video_id, language):
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("summaries")
+            .select("report")
+            .eq("video_id", video_id)
+            .eq("language", language)
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0]["report"]
+    except Exception:
+        return None
+    return None
+
+
+def save_supabase_cache(video_id, language, report):
+    if not supabase:
+        return
+    try:
+        supabase.table("summaries").upsert(
+            {
+                "video_id": video_id,
+                "language": language,
+                "report": report,
+            },
+            on_conflict="video_id,language",
+        ).execute()
+    except Exception:
+        pass
+
+
+def load_cache(video_id, language):
+    supa = load_supabase_cache(video_id, language)
+    if supa:
+        return supa
+
+    local = load_local_cache(video_id, language)
+    if local:
+        return local
+
+    return None
+
+
+def save_cache(video_id, language, report):
+    save_local_cache(video_id, language, report)
+    save_supabase_cache(video_id, language, report)
 
 
 @st.cache_data(show_spinner=False)
@@ -304,7 +375,7 @@ def split_transcript(items, max_chars=12000):
     return chunks
 
 
-def analyze_chunk(chunk, language):
+def analyze_chunk(chunk, language, chunk_number, total_chunks):
     prompt = f"""
 You are a careful YouTube content analyst.
 
@@ -317,6 +388,7 @@ Rules:
 - Use plain text only.
 - Do not invent facts.
 - Keep timeline references when available.
+- This is chunk {chunk_number} of {total_chunks}.
 
 Transcript chunk:
 {chunk}
@@ -332,6 +404,27 @@ Transcript chunk:
     )
 
     return response.choices[0].message.content
+
+
+def analyze_chunks_parallel(chunks, language, max_workers=3):
+    results = [None] * len(chunks)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(analyze_chunk, chunk, language, i + 1, len(chunks)): i
+            for i, chunk in enumerate(chunks)
+        }
+
+        progress = st.progress(0)
+        completed = 0
+
+        for future in as_completed(future_map):
+            idx = future_map[future]
+            results[idx] = future.result()
+            completed += 1
+            progress.progress(completed / len(chunks))
+
+    return results
 
 
 def create_report(analysis_text, language):
@@ -432,6 +525,8 @@ with st.sidebar:
         [t["home"], t["note"], t["mindmap"], t["quiz"], t["flashcards"]],
     )
 
+    st.caption("Supabase cache: " + ("ON" if supabase else "OFF"))
+
 
 st.title(t["title"])
 st.info(t["subtitle"])
@@ -449,11 +544,11 @@ col1, col2, col3 = st.columns(3)
 if language == "Korean":
     col1.info("📁 유튜브 링크 입력")
     col2.success("🧠 학습 노트 생성")
-    col3.warning("⚡ 즉시 로딩")
+    col3.warning("⚡ 캐시 즉시 로딩")
 else:
     col1.info("📁 Paste a YouTube link")
     col2.success("🧠 Generate study notes")
-    col3.warning("⚡ Instant loading")
+    col3.warning("⚡ Instant cache loading")
 
 
 if create_button:
@@ -481,12 +576,7 @@ if create_button:
         partials = []
 
         with st.spinner(t["loading_ai"]):
-            progress = st.progress(0)
-
-            for i, chunk in enumerate(chunks):
-                partials.append(analyze_chunk(chunk, language))
-                progress.progress((i + 1) / len(chunks))
-
+            partials = analyze_chunks_parallel(chunks, language, max_workers=3)
             report = create_report("\n\n".join(partials), language)
 
         save_cache(video_id, language, report)
